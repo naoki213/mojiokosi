@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>かんたん文字起こし（メーター付・保存＆コピー＆削除）</title>
+<title>かんたん文字おこし（日本語固定・語彙辞書・マイク選択）</title>
 <style>
   :root{ --bg:#f6f9fc; --card:#fff; --ink:#0f172a; --muted:#64748b; --accent:#2563eb; }
   html,body{margin:0;height:100%;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
@@ -15,10 +15,10 @@
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   button.danger{background:#ef4444;border-color:#ef4444;color:#fff}
   button:disabled{opacity:.5;cursor:not-allowed}
+  select{border:1px solid #dbe7f5;border-radius:10px;padding:10px 12px;background:#fff}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#eef6ff;color:var(--accent);border:1px solid #cfe3ff}
-
-  .panel{background:var(--card);border:1px solid #e6eef7;border-radius:16px;padding:14px}
+  .panel{background:var(--card);border:1px solid #e6eef7;border-radius:16px;padding:14px;margin:12px 0}
   .meters{display:grid;grid-template-columns:120px 1fr;gap:16px;align-items:center;margin:6px 0 14px}
   .mic-bubble{width:90px;height:90px;border-radius:999px;background:#e6f0ff;border:2px solid #cfe3ff;display:grid;place-items:center;transition:transform .08s linear, box-shadow .1s linear;box-shadow:0 0 0 rgba(37,99,235,.0)}
   .mic-bubble.on{box-shadow:0 0 24px rgba(37,99,235,.35)}
@@ -26,13 +26,12 @@
   .bar-wrap{height:14px;border-radius:999px;background:#eef3fb;overflow:hidden;border:1px solid #dbe7f5}
   .bar{height:100%;width:0%;background:#2563eb;transition:width .08s linear}
   #wave{width:100%;height:70px;display:block;background:#fafcff;border:1px dashed #dbe7f5;border-radius:10px}
-
   #log{white-space:pre-wrap;line-height:1.6}
   .seg{margin:0 0 10px;border-left:3px solid #dbe7f5;padding-left:10px}
   .seg .ts{color:var(--muted);font-size:12px;margin-right:6px}
   .seg .final{color:#0f172a}
   .seg .interim{color:#6b7280}
-
+  .note{font-size:12px;color:var(--muted)}
   footer{padding:20px 0 60px;color:var(--muted);text-align:center}
 </style>
 </head>
@@ -51,15 +50,20 @@
         <span class="badge" id="status">待機中</span>
       </div>
       <div class="row">
-        <span class="badge">自動バックアップ: 10秒ごと</span>
-        <span class="badge">推奨: Chrome / Edge</span>
-        <span class="badge">長時間対応: 自動再起動</span>
+        <label class="badge" style="background:#fff">🎤 マイク:
+          <select id="micSelect" style="margin-left:6px"></select>
+        </label>
+        <span class="badge">日本語固定（ja-JP）</span>
+        <span class="badge">語彙辞書バイアス有効</span>
+        <span class="badge">推奨: PC Chrome / Edge</span>
       </div>
     </div>
   </header>
 
   <main class="wrap">
     <div class="panel">
+      <h2>リアルタイム（Web Speech API）</h2>
+      <p class="note">iOS Safari はリアルタイム認識に未対応（録音のみ可）。</p>
       <div class="meters">
         <div class="mic-bubble" id="micBubble"><div class="mic-dot"></div></div>
         <div>
@@ -72,84 +76,268 @@
   </main>
 
   <footer>
-    🎙️開始 → 話すとメーターが動き文字が出ます。必要なとき「💾保存」や「📋コピー」で記録可能。<br/>
-    iOS Safari はリアルタイム認識非対応（録音のみ可）。
+    🎙️ 開始 → マイク許可 → メーターが動けば入力中。語彙辞書に歯科系用語を多数登録しています。<br/>
+    認識が途切れたら自動再起動します（ステータス表示に注目）。
   </footer>
 
 <script>
 (() => {
+  // ===== 歯科向け 頻出語彙（バイアス用） =====
+  const DENTAL_KEYWORDS = [
+    "歯科","デンタル","歯科医院","歯科クリニック","歯科医師","歯科衛生士","歯科技工士","一般歯科","予防歯科","小児歯科","矯正歯科","口腔外科","審美歯科","インプラント",
+    "スケーリング","ルートプレーニング","PMTC","クリーニング","保険診療","自費診療","レセプト","レセコン","返戻","カルテ","電子カルテ","口腔内","咬合","歯周病","う蝕","根管治療","抜髄","抜歯","埋伏歯",
+    "補綴","クラウン","ブリッジ","インレー","アンレー","義歯","レジン","アライナー","ブラケット","ワイヤー","保定装置","咬合器","フェイスボウ","印象","咬合採得",
+    "デンタル","パノラマ","セファロ","CBCT","滅菌","消毒","オートクレーブ","ディスポ","感染対策","アポイント","リコール","定期検診","初診","再初診","再診",
+    "開業支援","開業準備","事業計画","資金計画","融資","物件選定","テナント","内装","レイアウト","動線設計","医療機器選定","仕入れ","ディーラー","保守契約",
+    "保健所","開設届","管理者選任","施設基準","届出","労務管理","就業規則","採用","面接","研修","賃金","社会保険","勤怠","シフト","アサイン","業務分担","標準化","マニュアル",
+    "KPI設計","月次MTG","目標管理","運営改善","業務フロー","ブランディング","ロゴ","サイン","デザイン","ホームページ","予約システム","SNS","Googleマップ","口コミ",
+    "開業費","創立費","開業資金","運転資金","リース","割賦",
+    "ユニット","コンプレッサー","バキューム","口腔外バキューム","超音波スケーラー","タービン","コントラ","ハンドピース",
+    "口腔内カメラ","マイクロスコープ","レントゲン","デジタルセンサー","イメージングプレート",
+    "CAD/CAM","ミリング","3Dプリンター","三次元プリンタ","ジルコニア","イーマックス","e.max",
+    "接着材","セメント","コンポジットレジン","シーラント","ラバーダム","アイソレーション","サージカルガイド",
+    "点数","算定","施設基準","加算","算定要件","初診料","再診料","管理料","画像診断","投薬","在宅","金パラ","銀合金","保険ブリッジ","保険クラウン",
+    "国保","社保","後期高齢","公費","負担割合","算定漏れ","査定","疑義照会",
+    "問診票","説明同意","同意書","予約","リマインド","キャンセル","当日キャンセル","会計","現金","キャッシュレス","クレジット","交通系","請求書","領収書","インボイス",
+    "個人情報保護","同意取得","セキュリティ","バックアップ","クレーム対応","再発防止","品質管理",
+    "財務諸表","決算書","試算表","月次決算","貸借対照表","バランスシート","BS","損益計算書","PL","収益","売上高","売上原価","粗利","営業利益","経常利益","当期純利益",
+    "キャッシュフロー計算書","CF","フリーキャッシュフロー","売掛金","買掛金","棚卸資産","前受金","未収入金","未払金",
+    "固定資産","減価償却","リース資産","無形資産","繰延資産","保険積立金","純資産","資本金","利益剰余金",
+    "負債","流動負債","固定負債","借入金","リース債務","原価","変動費","固定費","人件費","法定福利費","地代家賃","水道光熱費","減価償却費","広告宣伝費","交際費","旅費交通費","通信費","消耗品費",
+    "資金繰り","運転資金","資金繰り表","回収サイト","支払サイト","予算","予実管理","乖離","月次報告","税務","消費税","仕入税額控除","インボイス制度","源泉所得税","年末調整","法人税","住民税","事業税","会計ソフト","クラウド会計","仕訳","総勘定元帳",
+    "新患数","再初診","再来率","予約率","来院率","リコール率","自費比率","自費率","平均単価","客単価","ユニット稼働率","チェアタイム","滞在時間","施術時間",
+    "キャンセル率","未収金","回収率","人件費率","広告費率","家賃比率","損益分岐点","診療報酬","点数単価","レセプト件数","算定件数",
+    "しか","レセ","植立","被せ物","かぶせ","マウスピース矯正","クリアアライナー","CR充填","レジン充填","口外バキューム","ピーエル","ビーエス","シーエフ"
+  ];
+
+  // ===== 状態 =====
   let recognizing=false, paused=false, recognizer=null, interimSpan=null, startTime=null;
   let micStream=null, audioCtx=null, analyser=null, timeData=null, rafId=null;
 
+  // 要素
   const $=id=>document.getElementById(id);
-  const logEl=$('log'),statusEl=$('status'),levelBar=$('levelBar'),micBubble=$('micBubble');
-  const wave=$('wave'),wctx=wave.getContext('2d');
-  const btnStart=$('btnStart'),btnPause=$('btnPause'),btnResume=$('btnResume'),btnStop=$('btnStop');
-  const btnQuickSave=$('btnQuickSave'),btnCopy=$('btnCopy'),btnClear=$('btnClear');
+  const logEl=$('log'), statusEl=$('status'), levelBar=$('levelBar'), micBubble=$('micBubble');
+  const wave=$('wave'), wctx=wave.getContext('2d');
+  const btnStart=$('btnStart'), btnPause=$('btnPause'), btnResume=$('btnResume'), btnStop=$('btnStop');
+  const btnQuickSave=$('btnQuickSave'), btnCopy=$('btnCopy'), btnClear=$('btnClear');
+  const micSelect=$('micSelect');
 
+  // ===== ユーティリティ =====
   const fmtTS=ms=>{const s=Math.floor(ms/1000);return`${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`};
   const nowTS=()=>startTime?fmtTS(Date.now()-startTime):'00:00:00';
-
-  function addSegment(text,{interim=false}={}){const seg=document.createElement('div');seg.className='seg';const ts=document.createElement('span');ts.className='ts';ts.textContent=`[${nowTS()}]`;const body=document.createElement('span');body.className=interim?'interim':'final';body.textContent=text;seg.appendChild(ts);seg.appendChild(body);logEl.appendChild(seg);interimSpan=interim?body:null;seg.scrollIntoView({behavior:'smooth',block:'end'});backupSave();}
-  function replaceInterim(text){if(interimSpan)interimSpan.textContent=text;else addSegment(text,{interim:true});}
   const setStatus=txt=>statusEl.textContent=txt;
 
-  function backupSave(){localStorage.setItem('transcript_html_v1',logEl.innerHTML);}
-  function backupLoad(){const html=localStorage.getItem('transcript_html_v1');if(html)logEl.innerHTML=html;}
-  setInterval(()=>{if(recognizing||logEl.innerHTML)backupSave();},10000);
+  function addSegment(text,{interim=false}={}) {
+    const seg=document.createElement('div'); seg.className='seg';
+    const ts=document.createElement('span'); ts.className='ts'; ts.textContent=`[${nowTS()}]`;
+    const body=document.createElement('span'); body.className=interim?'interim':'final'; body.textContent=text;
+    seg.appendChild(ts); seg.appendChild(body); logEl.appendChild(seg);
+    interimSpan = interim ? body : null;
+    seg.scrollIntoView({behavior:'smooth', block:'end'});
+    backupSave();
+  }
+  function replaceInterim(text){ if(interimSpan) interimSpan.textContent=text; else addSegment(text,{interim:true}); }
+
+  function backupSave(){ localStorage.setItem('transcript_html_v1', logEl.innerHTML); }
+  function backupLoad(){ const html=localStorage.getItem('transcript_html_v1'); if (html) logEl.innerHTML = html; }
+  setInterval(()=>{ if(recognizing || logEl.innerHTML) backupSave(); }, 10000);
 
   function quickSaveSnapshot(){
-    const text=Array.from(logEl.querySelectorAll('.seg')).map(seg=>{
-      const ts=seg.querySelector('.ts')?.textContent??'';const body=seg.querySelector('.final,.interim')?.textContent??'';return`${ts} ${body}`.trim();
+    const text = Array.from(logEl.querySelectorAll('.seg')).map(seg=>{
+      const ts=seg.querySelector('.ts')?.textContent??''; const body=seg.querySelector('.final,.interim')?.textContent??'';
+      return `${ts} ${body}`.trim();
     }).join('\n');
-    const id=new Date().toISOString();const item={id,savedAt:id,text,html:logEl.innerHTML};
-    const key='transcript_snapshots_v1';const arr=JSON.parse(localStorage.getItem(key)||'[]');arr.push(item);
-    localStorage.setItem(key,JSON.stringify(arr));
+    const id=new Date().toISOString();
+    const item={ id, savedAt:id, text, html:logEl.innerHTML };
+    const key='transcript_snapshots_v1';
+    const arr=JSON.parse(localStorage.getItem(key) || '[]'); arr.push(item);
+    localStorage.setItem(key, JSON.stringify(arr));
     flash('保存しました');
   }
 
   async function copyAll(){
-    const text=Array.from(logEl.querySelectorAll('.seg')).map(seg=>{
-      const ts=seg.querySelector('.ts')?.textContent??'';const body=seg.querySelector('.final,.interim')?.textContent??'';return`${ts} ${body}`.trim();
+    const text = Array.from(logEl.querySelectorAll('.seg')).map(seg=>{
+      const ts=seg.querySelector('.ts')?.textContent??''; const body=seg.querySelector('.final,.interim')?.textContent??'';
+      return `${ts} ${body}`.trim();
     }).join('\n');
-    try{await navigator.clipboard.writeText(text);flash('コピーしました');}
-    catch(e){console.error(e);flash('コピー失敗');}
+    try{
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else {
+        const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+      }
+      flash('コピーしました');
+    } catch(e) {
+      console.error(e); flash('コピー失敗');
+    }
   }
 
+  function flash(msg){ setStatus(msg); setTimeout(()=> setStatus(recognizing ? '認識中...' : '待機中'), 1500); }
+
+  // ===== デバイス選択 =====
+  async function listMics(){
+    try {
+      // ラベル取得のため最初に権限付与（無音でもOK）
+      await navigator.mediaDevices.getUserMedia({ audio:true });
+    } catch(_) { /* 権限拒否でも enumerates は動く環境あり */ }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const mics = devices.filter(d=>d.kind==='audioinput');
+    micSelect.innerHTML = mics.map(d=>`<option value="${d.deviceId}">${d.label || 'マイク'}</option>`).join('');
+  }
+
+  // ===== メーター初期化（選択マイク） =====
   async function initMicAndMeters(){
-    if(micStream)return micStream;
-    micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
-    audioCtx=new(window.AudioContext||window.webkitAudioContext)();const source=audioCtx.createMediaStreamSource(micStream);
-    analyser=audioCtx.createAnalyser();analyser.fftSize=2048;timeData=new Uint8Array(analyser.fftSize);source.connect(analyser);
-    wave.width=wave.clientWidth*devicePixelRatio;wave.height=wave.clientHeight*devicePixelRatio;
-    const loop=()=>{analyser.getByteTimeDomainData(timeData);let sum=0;for(let i=0;i<timeData.length;i++){const v=(timeData[i]-128)/128;sum+=v*v;}const rms=Math.sqrt(sum/timeData.length),level=Math.min(1,rms*4);levelBar.style.width=(level*100).toFixed(0)+'%';micBubble.classList.toggle('on',level>0.04);micBubble.style.transform=`scale(${(1+Math.min(0.25,level*0.8)).toFixed(3)})`;const W=wave.width,H=wave.height,mid=H/2;wctx.clearRect(0,0,W,H);wctx.lineWidth=2*devicePixelRatio;wctx.strokeStyle='#2563eb';wctx.beginPath();const step=Math.ceil(timeData.length/W);for(let x=0,i=0;x<W;x++,i+=step){const yv=(timeData[Math.min(i,timeData.length-1)]-128)/128;const y=mid+yv*(H/2-4*devicePixelRatio);if(x===0)wctx.moveTo(x,y);else wctx.lineTo(x,y);}wctx.stroke();rafId=requestAnimationFrame(loop);};
-    rafId=requestAnimationFrame(loop);
+    if (micStream) return micStream;
+    const deviceId = micSelect.value;
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio:{
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        echoCancellation:true, noiseSuppression:true, autoGainControl:true,
+        channelCount:1, sampleRate:48000
+      }
+    });
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AC();
+    const source = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 2048;
+    timeData = new Uint8Array(analyser.fftSize); source.connect(analyser);
+
+    wave.width = wave.clientWidth * devicePixelRatio;
+    wave.height = wave.clientHeight * devicePixelRatio;
+
+    const loop = () => {
+      analyser.getByteTimeDomainData(timeData);
+      let sum=0; for (let i=0;i<timeData.length;i++){ const v=(timeData[i]-128)/128; sum += v*v; }
+      const rms=Math.sqrt(sum/timeData.length), level=Math.min(1, rms*4);
+      levelBar.style.width = (level*100).toFixed(0)+'%';
+      micBubble.classList.toggle('on', level>0.04);
+      micBubble.style.transform = `scale(${(1+Math.min(0.25, level*0.8)).toFixed(3)})`;
+
+      const W=wave.width, H=wave.height, mid=H/2; const ctx=wctx; ctx.clearRect(0,0,W,H);
+      ctx.lineWidth=2*devicePixelRatio; ctx.strokeStyle='#2563eb';
+      ctx.beginPath(); const step=Math.ceil(timeData.length/W);
+      for(let x=0,i=0;x<W;x++,i+=step){
+        const yv=(timeData[Math.min(i,timeData.length-1)]-128)/128;
+        const y=mid + yv*(H/2 - 4*devicePixelRatio);
+        if(x===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+
+      rafId = requestAnimationFrame(loop);
+    };
+    rafId = requestAnimationFrame(loop);
     return micStream;
   }
 
-  function stopMicAndMeters(){if(rafId)cancelAnimationFrame(rafId),rafId=null;if(audioCtx)audioCtx.close().catch(()=>{});micBubble.style.transform='scale(1)';micBubble.classList.remove('on');}
+  function stopMicAndMeters(){
+    if (rafId) cancelAnimationFrame(rafId), rafId=null;
+    if (audioCtx) audioCtx.close().catch(()=>{});
+    micBubble.style.transform='scale(1)'; micBubble.classList.remove('on');
+  }
 
+  // ===== 音声認識（日本語固定＋語彙辞書） =====
   function createRecognizer(){
-    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!SR){alert('このブラウザは Web Speech API に未対応です。Chrome/Edge をお試しください。');return null;}
-    const r=new SR();r.lang='ja-JP';r.interimResults=true;r.continuous=true;r.maxAlternatives=1;
-    r.onstart=()=>setStatus('認識中...');
-    r.onend=()=>{setStatus(paused?'一時停止中':(recognizing?'再起動中...':'停止'));if(recognizing&&!paused) setTimeout(()=>{try{r.start();}catch{}},200);};
-    r.onerror=e=>{console.warn('Speech error:',e);setStatus('エラー: '+(e.error||'unknown'));if(recognizing&&!paused) setTimeout(()=>{try{r.start();}catch{}},400);};
-    r.onresult=ev=>{let interim='';for(let i=ev.resultIndex;i<ev.results.length;i++){const res=ev.results[i],txt=res[0].transcript;if(res.isFinal) addSegment(txt.trim(),{interim:false});else interim+=txt;}if(interim)replaceInterim(interim);};
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SGL = window.SpeechGrammarList || window.webkitSpeechGrammarList;
+    if (!SR) { alert('このブラウザは Web Speech API に未対応です。Chrome/Edge をお試しください。'); return null; }
+
+    const r = new SR();
+    r.lang = 'ja-JP';              // ★ 日本語固定
+    r.interimResults = true;
+    r.continuous = true;
+    r.maxAlternatives = 1;
+
+    // 語彙バイアス（対応ブラウザのみ有効）
+    if (SGL) {
+      const grammars = new SGL();
+      const jsgf = `#JSGF V1.0; grammar kws; public <kw> = ${DENTAL_KEYWORDS.join(' | ')} ;`;
+      grammars.addFromString(jsgf, 1.0);
+      r.grammars = grammars;
+    }
+
+    r.onstart = () => setStatus('認識中...（lang=ja-JP）');
+    r.onend   = () => {
+      setStatus(paused ? '一時停止中' : (recognizing ? '再起動中...' : '停止'));
+      if (recognizing && !paused) setTimeout(()=>{ try{ r.start(); } catch{} }, 200);
+    };
+    r.onerror = (e) => {
+      console.warn('Speech error:', e);
+      setStatus('エラー: ' + (e.error || 'unknown'));
+      if (recognizing && !paused) setTimeout(()=>{ try{ r.start(); } catch{} }, 400);
+    };
+    r.onresult = (ev) => {
+      let interim='';
+      for (let i=ev.resultIndex; i<ev.results.length; i++){
+        const res=ev.results[i], txt=res[0].transcript;
+        if (res.isFinal) {
+          // 簡易整形（読みやすさ向上）
+          const cleaned = txt.trim().replace(/\s+/g,' ')
+            .replace(/(です|ます)(?!。|！|？)/g, '$1。');
+          addSegment(cleaned, {interim:false});
+        } else {
+          interim += txt;
+        }
+      }
+      if (interim) replaceInterim(interim);
+    };
     return r;
   }
 
-  btnStart.onclick=async()=>{if(recognizing)return;backupLoad();startTime=Date.now();try{await initMicAndMeters();}catch(e){alert('マイク権限をご確認ください');return;}recognizer=createRecognizer();if(!recognizer)return;recognizing=true;paused=false;btnStart.disabled=true;btnPause.disabled=false;btnResume.disabled=true;btnStop.disabled=false;try{recognizer.start();}catch(e){};setStatus('認識中...');};
-  btnPause.onclick=()=>{if(!recognizing||paused)return;paused=true;try{recognizer.stop();}catch{};setStatus('一時停止中');btnPause.disabled=true;btnResume.disabled=false;};
-  btnResume.onclick=()=>{if(!recognizing||!paused)return;paused=false;try{recognizer.start();}catch{};setStatus('認識中...');btnPause.disabled=false;btnResume.disabled=true;};
-  btnStop.onclick=()=>{recognizing=false;paused=false;try{recognizer.stop();}catch{};stopMicAndMeters();btnStart.disabled=false;btnPause.disabled=true;btnResume.disabled=true;btnStop.disabled=true;setStatus('停止');backupSave();};
-  btnQuickSave.onclick=()=>quickSaveSnapshot();
-  btnCopy.onclick=()=>copyAll();
-  btnClear.onclick=()=>{if(!confirm('すべて削除しますか？'))return;logEl.innerHTML='';localStorage.removeItem('transcript_html_v1');setStatus('削除しました');setTimeout(()=>setStatus('待機中'),1500);};
+  // ===== ボタン動作 =====
+  btnStart.onclick = async () => {
+    if (recognizing) return;
+    backupLoad(); startTime = Date.now();
 
-  backupLoad();
+    try { await initMicAndMeters(); }
+    catch (e) { alert('マイク権限をご確認ください（🔒→サイトの設定）'); console.error(e); return; }
+
+    recognizer = createRecognizer(); if (!recognizer) return;
+    recognizing = true; paused = false;
+
+    btnStart.disabled = true; btnPause.disabled = false; btnResume.disabled = true; btnStop.disabled = false;
+    try { recognizer.start(); } catch(e){}
+    setStatus('認識中...（lang=ja-JP）');
+  };
+
+  btnPause.onclick = () => {
+    if (!recognizing || paused) return;
+    paused = true;
+    try { recognizer.stop(); } catch{}
+    setStatus('一時停止中');
+    btnPause.disabled = true; btnResume.disabled = false;
+  };
+
+  btnResume.onclick = () => {
+    if (!recognizing || !paused) return;
+    paused = false;
+    try { recognizer.start(); } catch{}
+    setStatus('認識中...（lang=ja-JP）');
+    btnPause.disabled = false; btnResume.disabled = true;
+  };
+
+  btnStop.onclick = () => {
+    recognizing = false; paused = false;
+    try { recognizer.stop(); } catch{}
+    stopMicAndMeters();
+    btnStart.disabled = false; btnPause.disabled = true; btnResume.disabled = true; btnStop.disabled = true;
+    setStatus('停止');
+    backupSave();
+  };
+
+  btnQuickSave.onclick = () => quickSaveSnapshot();
+  btnCopy.onclick      = () => copyAll();
+  btnClear.onclick     = () => {
+    if (!confirm('すべて削除しますか？')) return;
+    logEl.innerHTML = '';
+    localStorage.removeItem('transcript_html_v1');
+    setStatus('削除しました'); setTimeout(()=>setStatus('待機中'), 1500);
+  };
+
+  // 初期化：マイク一覧
+  listMics();
 })();
 </script>
 </body>
 </html>
+
