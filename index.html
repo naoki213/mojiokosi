@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>かんたん文字起こし（メーター付・ワンクリ保存＆コピー）</title>
+<title>かんたん文字起こし（メーター付・保存＆コピー＆削除）</title>
 <style>
   :root{ --bg:#f6f9fc; --card:#fff; --ink:#0f172a; --muted:#64748b; --accent:#2563eb; }
   html,body{margin:0;height:100%;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
@@ -16,7 +16,7 @@
   button.danger{background:#ef4444;border-color:#ef4444;color:#fff}
   button:disabled{opacity:.5;cursor:not-allowed}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-  .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#eef6ff;color:#2563eb;border:1px solid #cfe3ff}
+  .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#eef6ff;color:var(--accent);border:1px solid #cfe3ff}
 
   .panel{background:var(--card);border:1px solid #e6eef7;border-radius:16px;padding:14px}
   .meters{display:grid;grid-template-columns:120px 1fr;gap:16px;align-items:center;margin:6px 0 14px}
@@ -39,14 +39,15 @@
 <body>
   <header>
     <div class="wrap">
-      <h1>かんたん文字起こし（Web Speech / ローカル保存 / メーター付）</h1>
+      <h1>かんたん文字おこし</h1>
       <div class="toolbar">
         <button id="btnStart" class="primary">🎙️ 開始</button>
         <button id="btnPause" disabled>⏸ 一時停止</button>
         <button id="btnResume" disabled>▶ 再開</button>
         <button id="btnStop" class="danger" disabled>■ 停止</button>
-        <button id="btnQuickSave" title="現在の文字起こしをローカルにスナップショット保存">💾 保存</button>
-        <button id="btnCopy" title="現在の文字起こしを丸ごとクリップボードへコピー">📋 コピー</button>
+        <button id="btnQuickSave" title="現在の文字をローカルにスナップショット保存">💾 保存</button>
+        <button id="btnCopy" title="現在の文字をコピー">📋 コピー</button>
+        <button id="btnClear" class="danger" title="全消去">🗑 削除</button>
         <span class="badge" id="status">待機中</span>
       </div>
       <div class="row">
@@ -71,143 +72,81 @@
   </main>
 
   <footer>
-    使い方: 開始→話す→メーターが動けば入力中 → 必要に応じて「💾保存」or「📋コピー」。<br/>
-    ※ iOS Safari はリアルタイム認識不可（録音のみ可）。高精度は保存音声の後処理推奨。
+    🎙️開始 → 話すとメーターが動き文字が出ます。必要なとき「💾保存」や「📋コピー」で記録可能。<br/>
+    iOS Safari はリアルタイム認識非対応（録音のみ可）。
   </footer>
 
 <script>
 (() => {
-  let recognizing = false, paused = false, recognizer = null, interimSpan = null, startTime = null;
-  let micStream = null, audioCtx = null, analyser = null, timeData = null, rafId = null;
+  let recognizing=false, paused=false, recognizer=null, interimSpan=null, startTime=null;
+  let micStream=null, audioCtx=null, analyser=null, timeData=null, rafId=null;
 
-  const $ = (id) => document.getElementById(id);
-  const logEl = $('log'), statusEl = $('status'), levelBar = $('levelBar'), micBubble = $('micBubble');
-  const wave = $('wave'), wctx = wave.getContext('2d');
-  const btnStart = $('btnStart'), btnPause = $('btnPause'), btnResume = $('btnResume'), btnStop = $('btnStop');
-  const btnQuickSave = $('btnQuickSave'), btnCopy = $('btnCopy');
+  const $=id=>document.getElementById(id);
+  const logEl=$('log'),statusEl=$('status'),levelBar=$('levelBar'),micBubble=$('micBubble');
+  const wave=$('wave'),wctx=wave.getContext('2d');
+  const btnStart=$('btnStart'),btnPause=$('btnPause'),btnResume=$('btnResume'),btnStop=$('btnStop');
+  const btnQuickSave=$('btnQuickSave'),btnCopy=$('btnCopy'),btnClear=$('btnClear');
 
-  const fmtTS = (ms) => { const s = Math.floor(ms/1000); const hh=String(Math.floor(s/3600)).padStart(2,'0'), mm=String(Math.floor((s%3600)/60)).padStart(2,'0'), ss=String(s%60).padStart(2,'0'); return `${hh}:${mm}:${ss}`; };
-  const nowTS = () => startTime ? fmtTS(Date.now() - startTime) : '00:00:00';
+  const fmtTS=ms=>{const s=Math.floor(ms/1000);return`${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`};
+  const nowTS=()=>startTime?fmtTS(Date.now()-startTime):'00:00:00';
 
-  const addSegment = (text, {interim=false}={}) => {
-    const seg = document.createElement('div'); seg.className = 'seg';
-    const ts = document.createElement('span'); ts.className='ts'; ts.textContent = `[${nowTS()}]`;
-    const body = document.createElement('span'); body.className = interim ? 'interim' : 'final'; body.textContent = text;
-    seg.appendChild(ts); seg.appendChild(body); logEl.appendChild(seg);
-    interimSpan = interim ? body : null;
-    seg.scrollIntoView({behavior:'smooth', block:'end'});
-    backupSave();
-  };
-  const replaceInterim = (text) => { interimSpan ? interimSpan.textContent = text : addSegment(text, {interim:true}); };
-  const setStatus = (txt) => statusEl.textContent = txt;
+  function addSegment(text,{interim=false}={}){const seg=document.createElement('div');seg.className='seg';const ts=document.createElement('span');ts.className='ts';ts.textContent=`[${nowTS()}]`;const body=document.createElement('span');body.className=interim?'interim':'final';body.textContent=text;seg.appendChild(ts);seg.appendChild(body);logEl.appendChild(seg);interimSpan=interim?body:null;seg.scrollIntoView({behavior:'smooth',block:'end'});backupSave();}
+  function replaceInterim(text){if(interimSpan)interimSpan.textContent=text;else addSegment(text,{interim:true});}
+  const setStatus=txt=>statusEl.textContent=txt;
 
-  function backupSave(){ localStorage.setItem('transcript_html_v1', logEl.innerHTML); }
-  function backupLoad(){ const html = localStorage.getItem('transcript_html_v1'); if (html) logEl.innerHTML = html; }
-  setInterval(() => { if (recognizing || logEl.innerHTML) backupSave(); }, 10000);
+  function backupSave(){localStorage.setItem('transcript_html_v1',logEl.innerHTML);}
+  function backupLoad(){const html=localStorage.getItem('transcript_html_v1');if(html)logEl.innerHTML=html;}
+  setInterval(()=>{if(recognizing||logEl.innerHTML)backupSave();},10000);
 
   function quickSaveSnapshot(){
-    const text = buildPlainText();
-    const id = new Date().toISOString();
-    const item = { id, savedAt:id, text, html: logEl.innerHTML };
-    const key='transcript_snapshots_v1';
-    const arr = JSON.parse(localStorage.getItem(key) || '[]'); arr.push(item);
-    localStorage.setItem(key, JSON.stringify(arr));
+    const text=Array.from(logEl.querySelectorAll('.seg')).map(seg=>{
+      const ts=seg.querySelector('.ts')?.textContent??'';const body=seg.querySelector('.final,.interim')?.textContent??'';return`${ts} ${body}`.trim();
+    }).join('\n');
+    const id=new Date().toISOString();const item={id,savedAt:id,text,html:logEl.innerHTML};
+    const key='transcript_snapshots_v1';const arr=JSON.parse(localStorage.getItem(key)||'[]');arr.push(item);
+    localStorage.setItem(key,JSON.stringify(arr));
     flash('保存しました');
   }
 
-  function buildPlainText(){
-    return Array.from(logEl.querySelectorAll('.seg')).map(seg=>{
-      const ts = seg.querySelector('.ts')?.textContent ?? '';
-      const body = seg.querySelector('.final, .interim')?.textContent ?? '';
-      return `${ts} ${body}`.trim();
-    }).join('\n');
-  }
-
   async function copyAll(){
-    const text = buildPlainText();
-    try{
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        // フォールバック
-        const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
-        ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-      }
-      flash('コピーしました');
-    }catch(e){
-      console.error(e); flash('コピーに失敗しました');
-    }
-  }
-
-  function flash(msg){
-    const old = statusEl.textContent;
-    setStatus(msg);
-    setTimeout(()=> setStatus(recognizing ? '認識中...' : '待機中'), 1500);
+    const text=Array.from(logEl.querySelectorAll('.seg')).map(seg=>{
+      const ts=seg.querySelector('.ts')?.textContent??'';const body=seg.querySelector('.final,.interim')?.textContent??'';return`${ts} ${body}`.trim();
+    }).join('\n');
+    try{await navigator.clipboard.writeText(text);flash('コピーしました');}
+    catch(e){console.error(e);flash('コピー失敗');}
   }
 
   async function initMicAndMeters(){
-    if (micStream) return micStream;
-    micStream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true } });
-    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-    const source = audioCtx.createMediaStreamSource(micStream);
-    analyser = audioCtx.createAnalyser(); analyser.fftSize = 2048; timeData = new Uint8Array(analyser.fftSize); source.connect(analyser);
-
-    wave.width = wave.clientWidth * devicePixelRatio; wave.height = wave.clientHeight * devicePixelRatio;
-    const loop = () => {
-      analyser.getByteTimeDomainData(timeData);
-      let sum=0; for(let i=0;i<timeData.length;i++){ const v=(timeData[i]-128)/128; sum+=v*v; }
-      const rms = Math.sqrt(sum/timeData.length), level = Math.min(1, rms*4);
-      levelBar.style.width = (level*100).toFixed(0)+'%';
-      micBubble.classList.toggle('on', level>0.04);
-      micBubble.style.transform = `scale(${(1+Math.min(0.25, level*0.8)).toFixed(3)})`;
-
-      const W=wave.width,H=wave.height,mid=H/2; const ctx=wctx; ctx.clearRect(0,0,W,H); ctx.lineWidth=2*devicePixelRatio; ctx.strokeStyle='#2563eb';
-      ctx.beginPath(); const step=Math.ceil(timeData.length/W);
-      for(let x=0,i=0;x<W;x++,i+=step){ const yv=(timeData[Math.min(i,timeData.length-1)]-128)/128; const y=mid + yv*(H/2-4*devicePixelRatio); if(x===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); }
-      ctx.stroke();
-
-      rafId = requestAnimationFrame(loop);
-    };
-    rafId = requestAnimationFrame(loop);
+    if(micStream)return micStream;
+    micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();const source=audioCtx.createMediaStreamSource(micStream);
+    analyser=audioCtx.createAnalyser();analyser.fftSize=2048;timeData=new Uint8Array(analyser.fftSize);source.connect(analyser);
+    wave.width=wave.clientWidth*devicePixelRatio;wave.height=wave.clientHeight*devicePixelRatio;
+    const loop=()=>{analyser.getByteTimeDomainData(timeData);let sum=0;for(let i=0;i<timeData.length;i++){const v=(timeData[i]-128)/128;sum+=v*v;}const rms=Math.sqrt(sum/timeData.length),level=Math.min(1,rms*4);levelBar.style.width=(level*100).toFixed(0)+'%';micBubble.classList.toggle('on',level>0.04);micBubble.style.transform=`scale(${(1+Math.min(0.25,level*0.8)).toFixed(3)})`;const W=wave.width,H=wave.height,mid=H/2;wctx.clearRect(0,0,W,H);wctx.lineWidth=2*devicePixelRatio;wctx.strokeStyle='#2563eb';wctx.beginPath();const step=Math.ceil(timeData.length/W);for(let x=0,i=0;x<W;x++,i+=step){const yv=(timeData[Math.min(i,timeData.length-1)]-128)/128;const y=mid+yv*(H/2-4*devicePixelRatio);if(x===0)wctx.moveTo(x,y);else wctx.lineTo(x,y);}wctx.stroke();rafId=requestAnimationFrame(loop);};
+    rafId=requestAnimationFrame(loop);
     return micStream;
   }
 
-  function stopMicAndMeters(){
-    if (rafId) cancelAnimationFrame(rafId), rafId=null;
-    if (audioCtx) audioCtx.close().catch(()=>{});
-    micBubble.style.transform='scale(1)'; micBubble.classList.remove('on');
-  }
+  function stopMicAndMeters(){if(rafId)cancelAnimationFrame(rafId),rafId=null;if(audioCtx)audioCtx.close().catch(()=>{});micBubble.style.transform='scale(1)';micBubble.classList.remove('on');}
 
   function createRecognizer(){
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR){ alert('このブラウザは Web Speech API に未対応です。Chrome/Edge をお試しください。'); return null; }
-    const r = new SR(); r.lang='ja-JP'; r.interimResults=true; r.continuous=true; r.maxAlternatives=1;
-    r.onstart = ()=> setStatus('認識中...');
-    r.onend   = ()=> { setStatus(paused ? '一時停止中' : (recognizing ? '再起動中...' : '停止')); if (recognizing && !paused) setTimeout(()=>{try{r.start();}catch{}} ,200); };
-    r.onerror = (e)=> { console.warn('Speech error:', e); setStatus('エラー: '+(e.error||'unknown')); if (recognizing && !paused) setTimeout(()=>{try{r.start();}catch{}} ,400); };
-    r.onresult= (ev)=> {
-      let interim=''; for(let i=ev.resultIndex;i<ev.results.length;i++){ const res=ev.results[i], txt=res[0].transcript; if(res.isFinal) addSegment(txt.trim(), {interim:false}); else interim+=txt; }
-      if (interim) replaceInterim(interim);
-    };
+    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!SR){alert('このブラウザは Web Speech API に未対応です。Chrome/Edge をお試しください。');return null;}
+    const r=new SR();r.lang='ja-JP';r.interimResults=true;r.continuous=true;r.maxAlternatives=1;
+    r.onstart=()=>setStatus('認識中...');
+    r.onend=()=>{setStatus(paused?'一時停止中':(recognizing?'再起動中...':'停止'));if(recognizing&&!paused) setTimeout(()=>{try{r.start();}catch{}},200);};
+    r.onerror=e=>{console.warn('Speech error:',e);setStatus('エラー: '+(e.error||'unknown'));if(recognizing&&!paused) setTimeout(()=>{try{r.start();}catch{}},400);};
+    r.onresult=ev=>{let interim='';for(let i=ev.resultIndex;i<ev.results.length;i++){const res=ev.results[i],txt=res[0].transcript;if(res.isFinal) addSegment(txt.trim(),{interim:false});else interim+=txt;}if(interim)replaceInterim(interim);};
     return r;
   }
 
-  btnStart.onclick = async () => {
-    if (recognizing) return;
-    backupLoad(); startTime = Date.now();
-    try { await initMicAndMeters(); } catch(e){ alert('マイク権限をご確認ください（🔒→サイトの設定）。'); console.error(e); return; }
-    recognizer = createRecognizer(); if (!recognizer) return;
-    recognizing = true; paused=false;
-    btnStart.disabled=true; btnPause.disabled=false; btnResume.disabled=true; btnStop.disabled=false;
-    try{ recognizer.start(); }catch(e){}
-    setStatus('認識中...');
-  };
-  btnPause.onclick = () => { if (!recognizing || paused) return; paused=true; try{recognizer.stop();}catch{} setStatus('一時停止中'); btnPause.disabled=true; btnResume.disabled=false; };
-  btnResume.onclick= () => { if (!recognizing || !paused) return; paused=false; try{recognizer.start();}catch{} setStatus('認識中...'); btnPause.disabled=false; btnResume.disabled=true; };
-  btnStop.onclick   = () => { recognizing=false; paused=false; try{recognizer.stop();}catch{} stopMicAndMeters(); btnStart.disabled=false; btnPause.disabled=true; btnResume.disabled=true; btnStop.disabled=true; setStatus('停止'); backupSave(); };
-
-  btnQuickSave.onclick = () => quickSaveSnapshot();
-  btnCopy.onclick = () => copyAll();
+  btnStart.onclick=async()=>{if(recognizing)return;backupLoad();startTime=Date.now();try{await initMicAndMeters();}catch(e){alert('マイク権限をご確認ください');return;}recognizer=createRecognizer();if(!recognizer)return;recognizing=true;paused=false;btnStart.disabled=true;btnPause.disabled=false;btnResume.disabled=true;btnStop.disabled=false;try{recognizer.start();}catch(e){};setStatus('認識中...');};
+  btnPause.onclick=()=>{if(!recognizing||paused)return;paused=true;try{recognizer.stop();}catch{};setStatus('一時停止中');btnPause.disabled=true;btnResume.disabled=false;};
+  btnResume.onclick=()=>{if(!recognizing||!paused)return;paused=false;try{recognizer.start();}catch{};setStatus('認識中...');btnPause.disabled=false;btnResume.disabled=true;};
+  btnStop.onclick=()=>{recognizing=false;paused=false;try{recognizer.stop();}catch{};stopMicAndMeters();btnStart.disabled=false;btnPause.disabled=true;btnResume.disabled=true;btnStop.disabled=true;setStatus('停止');backupSave();};
+  btnQuickSave.onclick=()=>quickSaveSnapshot();
+  btnCopy.onclick=()=>copyAll();
+  btnClear.onclick=()=>{if(!confirm('すべて削除しますか？'))return;logEl.innerHTML='';localStorage.removeItem('transcript_html_v1');setStatus('削除しました');setTimeout(()=>setStatus('待機中'),1500);};
 
   backupLoad();
 })();
