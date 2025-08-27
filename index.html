@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>かんたん文字起こし（ブラウザだけ）</title>
+<style>
+  :root{
+    --bg:#f6f9fc; --card:#fff; --ink:#0f172a; --muted:#64748b; --accent:#2563eb;
+  }
+  html,body{margin:0;height:100%;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+  header{position:sticky;top:0;background:rgba(255,255,255,.9);backdrop-filter:saturate(1.2) blur(6px);border-bottom:1px solid #e6eef7}
+  .wrap{max-width:1100px;margin:auto;padding:16px}
+  h1{font-size:20px;margin:8px 0}
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px}
+  button,select{
+    appearance:none;border:1px solid #dbe7f5;background:#fff;border-radius:10px;
+    padding:10px 14px;font-weight:700;cursor:pointer
+  }
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.danger{background:#ef4444;border-color:#ef4444;color:#fff}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#eef6ff;color:#2563eb;border:1px solid #cfe3ff}
+  .panel{background:var(--card);border:1px solid #e6eef7;border-radius:16px;padding:14px}
+  #log{white-space:pre-wrap;line-height:1.6}
+  .seg{margin:0 0 10px;border-left:3px solid #dbe7f5;padding-left:10px}
+  .seg .ts{color:var(--muted);font-size:12px;margin-right:6px}
+  .seg .spk{font-weight:800;margin-right:6px}
+  .seg .final{color:#0f172a}
+  .seg .interim{color:#6b7280}
+  footer{padding:20px 0 60px;color:var(--muted);text-align:center}
+</style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>かんたん文字起こし（Web Speech / ローカル保存 / TXT出力）</h1>
+      <div class="toolbar">
+        <button id="btnStart" class="primary">🎙️ 録音・文字起こし開始</button>
+        <button id="btnPause" disabled>⏸ 一時停止</button>
+        <button id="btnResume" disabled>▶ 再開</button>
+        <button id="btnStop" class="danger" disabled>■ 停止</button>
+        <button id="btnSpeaker" title="話者を切替（A→B→C…）">👤 話者切替</button>
+        <button id="btnClear" title="画面と下書きを消去">🧹 全消去</button>
+        <button id="btnSaveTxt">📝 TXTで保存</button>
+        <button id="btnSaveAudio" title="同時録音の音声を保存（任意）">🔊 音声を保存</button>
+        <span class="badge" id="status">待機中</span>
+      </div>
+      <div class="row">
+        <span class="badge">自動バックアップ: 10秒ごと</span>
+        <span class="badge">推奨: Chrome / Edge</span>
+        <span class="badge">長時間対応: 自動再起動</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="panel">
+      <div id="log"></div>
+    </div>
+  </main>
+
+  <footer>
+    使い方: 開始→話す→必要に応じて「話者切替」→停止→TXT保存。<br/>
+    精度を高めたい場合は、保存した音声を後で高精度エンジン（Whisper等）にかけるのがおすすめです。
+  </footer>
+
+<script>
+(() => {
+  // ---- 状態 ----
+  let recognizing = false;
+  let paused = false;
+  let recognizer = null;
+  let interimSpan = null;
+  let currentSpeaker = 'A';
+  let startTime = null;
+
+  // 生音声（任意で保存用）
+  let mediaRecorder = null;
+  let audioChunks = [];
+
+  // 要素
+  const $ = (id) => document.getElementById(id);
+  const logEl = $('log');
+  const statusEl = $('status');
+
+  const btnStart = $('btnStart');
+  const btnPause = $('btnPause');
+  const btnResume = $('btnResume');
+  const btnStop = $('btnStop');
+  const btnSpeaker = $('btnSpeaker');
+  const btnClear = $('btnClear');
+  const btnSaveTxt = $('btnSaveTxt');
+  const btnSaveAudio = $('btnSaveAudio');
+
+  // ---- ユーティリティ ----
+  const fmtTS = (ms) => {
+    const s = Math.floor(ms/1000);
+    const hh = String(Math.floor(s/3600)).padStart(2,'0');
+    const mm = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
+  };
+
+  const nowTS = () => startTime ? fmtTS(Date.now() - startTime) : '00:00:00';
+
+  const addSegment = (text, {interim=false} = {}) => {
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = `[${nowTS()}]`;
+    const spk = document.createElement('span');
+    spk.className = 'spk';
+    spk.textContent = `${currentSpeaker}:`;
+    const body = document.createElement('span');
+    body.className = interim ? 'interim' : 'final';
+    body.textContent = text;
+
+    seg.appendChild(ts);
+    seg.appendChild(spk);
+    seg.appendChild(body);
+    logEl.appendChild(seg);
+
+    if (interim) interimSpan = body; else interimSpan = null;
+    // 末尾へスクロール
+    seg.scrollIntoView({behavior:'smooth', block:'end'});
+    backupSave();
+  };
+
+  const replaceInterim = (text) => {
+    if (interimSpan) {
+      interimSpan.textContent = text;
+    } else {
+      // なければ作る
+      addSegment(text, {interim:true});
+    }
+  };
+
+  const setStatus = (txt) => statusEl.textContent = txt;
+
+  // ---- ローカルバックアップ（10秒ごと） ----
+  function backupSave() {
+    // 軽量のHTMLで保存（表示そのまま）
+    localStorage.setItem('transcript_html_v1', logEl.innerHTML);
+    localStorage.setItem('transcript_speaker_v1', currentSpeaker);
+  }
+  function backupLoad() {
+    const html = localStorage.getItem('transcript_html_v1');
+    if (html) logEl.innerHTML = html;
+    const spk = localStorage.getItem('transcript_speaker_v1');
+    if (spk) currentSpeaker = spk;
+  }
+  // 定期保存タイマー
+  setInterval(() => { if (recognizing || logEl.innerHTML) backupSave(); }, 10000);
+
+  // ---- 音声認識のセットアップ（自動再起動つき）----
+  function createRecognizer() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      alert('このブラウザは Web Speech API に未対応です。Chrome系をお試しください。');
+      return null;
+    }
+    const r = new SR();
+    r.lang = 'ja-JP';
+    r.interimResults = true;
+    r.continuous = true; // 連続
+    r.maxAlternatives = 1;
+
+    r.onstart = () => setStatus('認識中...');
+    r.onend = () => {
+      setStatus(paused ? '一時停止中' : (recognizing ? '再起動中...' : '停止'));
+      // 停止指示でなければ自動再起動
+      if (recognizing && !paused) {
+        setTimeout(() => { try { r.start(); } catch(e){} }, 200);
+      }
+    };
+    r.onerror = (e) => {
+      console.warn('Speech error:', e);
+      setStatus('エラー: ' + (e.error || 'unknown'));
+      // ネットワーク／no-speech等は再起動
+      if (recognizing && !paused) {
+        setTimeout(() => { try { r.start(); } catch(_){} }, 400);
+      }
+    };
+    r.onresult = (ev) => {
+      let interimText = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        const txt = res[0].transcript;
+        if (res.isFinal) {
+          // 確定は行を締める
+          addSegment(txt.trim(), {interim:false});
+        } else {
+          interimText += txt;
+        }
+      }
+      if (interimText) replaceInterim(interimText);
+    };
+    return r;
+  }
+
+  // ---- 生音声の同時録音（バックアップ用）----
+  async function startAudioBackup() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+      audioChunks = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
+      mediaRecorder.start(1000); // 1sごとにチャンク
+    } catch (e) {
+      console.warn('マイク録音が利用できません:', e);
+    }
+  }
+  function stopAudioBackup() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  }
+
+  // ---- ボタン挙動 ----
+  btnStart.onclick = async () => {
+    if (recognizing) return;
+    backupLoad();
+    startTime = Date.now();
+    recognizer = createRecognizer();
+    if (!recognizer) return;
+    recognizing = true; paused = false;
+
+    btnStart.disabled = true;
+    btnPause.disabled = false;
+    btnResume.disabled = true;
+    btnStop.disabled = false;
+
+    try { recognizer.start(); } catch(e){}
+    await startAudioBackup();
+    setStatus('認識中...');
+  };
+
+  btnPause.onclick = () => {
+    if (!recognizing || paused) return;
+    paused = true;
+    try { recognizer.stop(); } catch(e){}
+    setStatus('一時停止中');
+    btnPause.disabled = true;
+    btnResume.disabled = false;
+  };
+
+  btnResume.onclick = () => {
+    if (!recognizing || !paused) return;
+    paused = false;
+    try { recognizer.start(); } catch(e){}
+    setStatus('認識中...');
+    btnPause.disabled = false;
+    btnResume.disabled = true;
+  };
+
+  btnStop.onclick = () => {
+    recognizing = false; paused = false;
+    try { recognizer.stop(); } catch(e){}
+    stopAudioBackup();
+    btnStart.disabled = false;
+    btnPause.disabled = true;
+    btnResume.disabled = true;
+    btnStop.disabled = true;
+    setStatus('停止');
+    backupSave();
+  };
+
+  btnSpeaker.onclick = () => {
+    // A->B->C->D->A...
+    const next = {A:'B', B:'C', C:'D', D:'A'};
+    currentSpeaker = next[currentSpeaker] || 'A';
+    backupSave();
+    setStatus(`話者: ${currentSpeaker}`);
+  };
+
+  btnClear.onclick = () => {
+    if (!confirm('画面とバックアップを削除します。よろしいですか？')) return;
+    logEl.innerHTML = '';
+    localStorage.removeItem('transcript_html_v1');
+    localStorage.removeItem('transcript_speaker_v1');
+  };
+
+  btnSaveTxt.onclick = () => {
+    // ログからプレーンテキスト生成
+    const segs = Array.from(logEl.querySelectorAll('.seg'));
+    const lines = segs.map(seg => {
+      const ts = seg.querySelector('.ts')?.textContent ?? '';
+      const spk = seg.querySelector('.spk')?.textContent ?? '';
+      const body = seg.querySelector('.final, .interim')?.textContent ?? '';
+      return `${ts} ${spk} ${body}`.trim();
+    });
+    const blob = new Blob([lines.join('\n')], {type:'text/plain;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const dt = new Date().toISOString().replaceAll(':','-').slice(0,19);
+    a.download = `transcript_${dt}.txt`;
+    a.click();
+  };
+
+  btnSaveAudio.onclick = () => {
+    if (!audioChunks.length) {
+      alert('保存できる音声がありません（録音を開始して停止してください）');
+      return;
+    }
+    const blob = new Blob(audioChunks, {type:'audio/webm'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const dt = new Date().toISOString().replaceAll(':','-').slice(0,19);
+    a.download = `audio_${dt}.webm`;
+    a.click();
+  };
+
+  // 起動時に下書き復元（あれば）
+  backupLoad();
+})();
+</script>
+</body>
+</html>
