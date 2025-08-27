@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>かんたん文字起こし（ブラウザだけ）</title>
+<title>かんたん文字起こし（メーター付）</title>
 <style>
   :root{
     --bg:#f6f9fc; --card:#fff; --ink:#0f172a; --muted:#64748b; --accent:#2563eb;
@@ -22,20 +22,35 @@
   button:disabled{opacity:.5;cursor:not-allowed}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#eef6ff;color:#2563eb;border:1px solid #cfe3ff}
+
+  /* --- メーターパネル --- */
   .panel{background:var(--card);border:1px solid #e6eef7;border-radius:16px;padding:14px}
+  .meters{display:grid;grid-template-columns:120px 1fr;gap:16px;align-items:center;margin:6px 0 14px}
+  .mic-bubble{
+    width:90px;height:90px;border-radius:999px;background:#e6f0ff;border:2px solid #cfe3ff;
+    display:grid;place-items:center;transition:transform .08s linear, box-shadow .1s linear;
+    box-shadow:0 0 0 rgba(37,99,235,.0);
+  }
+  .mic-bubble.on{box-shadow:0 0 24px rgba(37,99,235,.35)}
+  .mic-dot{width:16px;height:16px;border-radius:999px;background:#2563eb}
+  .bar-wrap{height:14px;border-radius:999px;background:#eef3fb;overflow:hidden;border:1px solid #dbe7f5}
+  .bar{height:100%;width:0%;background:#2563eb;transition:width .08s linear}
+  #wave{width:100%;height:70px;display:block;background:#fafcff;border:1px dashed #dbe7f5;border-radius:10px}
+
   #log{white-space:pre-wrap;line-height:1.6}
   .seg{margin:0 0 10px;border-left:3px solid #dbe7f5;padding-left:10px}
   .seg .ts{color:var(--muted);font-size:12px;margin-right:6px}
   .seg .spk{font-weight:800;margin-right:6px}
   .seg .final{color:#0f172a}
   .seg .interim{color:#6b7280}
+
   footer{padding:20px 0 60px;color:var(--muted);text-align:center}
 </style>
 </head>
 <body>
   <header>
     <div class="wrap">
-      <h1>かんたん文字起こし（Web Speech / ローカル保存 / TXT出力）</h1>
+      <h1>かんたん文字起こし（Web Speech / ローカル保存 / TXT出力 / メーター付）</h1>
       <div class="toolbar">
         <button id="btnStart" class="primary">🎙️ 録音・文字起こし開始</button>
         <button id="btnPause" disabled>⏸ 一時停止</button>
@@ -57,13 +72,22 @@
 
   <main class="wrap">
     <div class="panel">
+      <!-- メータービュー -->
+      <div class="meters">
+        <div class="mic-bubble" id="micBubble"><div class="mic-dot"></div></div>
+        <div>
+          <div class="bar-wrap"><div class="bar" id="levelBar"></div></div>
+          <canvas id="wave"></canvas>
+        </div>
+      </div>
+      <!-- 文字ログ -->
       <div id="log"></div>
     </div>
   </main>
 
   <footer>
-    使い方: 開始→話す→必要に応じて「話者切替」→停止→TXT保存。<br/>
-    精度を高めたい場合は、保存した音声を後で高精度エンジン（Whisper等）にかけるのがおすすめです。
+    使い方: 開始→話す→メーターが動けば入力中 → 必要に応じて「話者切替」→停止→TXT保存。<br/>
+    注意: iOS Safari ではリアルタイム認識は不可（録音のみ可）。高精度は保存音声を後処理推奨。
   </footer>
 
 <script>
@@ -76,14 +100,24 @@
   let currentSpeaker = 'A';
   let startTime = null;
 
-  // 生音声（任意で保存用）
+  // マイク共有ストリーム / WebAudio
+  let micStream = null;
   let mediaRecorder = null;
   let audioChunks = [];
 
-  // 要素
+  let audioCtx = null;
+  let analyser = null;
+  let timeData = null;
+  let rafId = null;
+
+  // 要素参照
   const $ = (id) => document.getElementById(id);
   const logEl = $('log');
   const statusEl = $('status');
+  const levelBar = $('levelBar');
+  const micBubble = $('micBubble');
+  const wave = $('wave');
+  const wctx = wave.getContext('2d');
 
   const btnStart = $('btnStart');
   const btnPause = $('btnPause');
@@ -102,119 +136,138 @@
     const ss = String(s%60).padStart(2,'0');
     return `${hh}:${mm}:${ss}`;
   };
-
   const nowTS = () => startTime ? fmtTS(Date.now() - startTime) : '00:00:00';
 
   const addSegment = (text, {interim=false} = {}) => {
     const seg = document.createElement('div');
     seg.className = 'seg';
-    const ts = document.createElement('span');
-    ts.className = 'ts';
-    ts.textContent = `[${nowTS()}]`;
-    const spk = document.createElement('span');
-    spk.className = 'spk';
-    spk.textContent = `${currentSpeaker}:`;
-    const body = document.createElement('span');
-    body.className = interim ? 'interim' : 'final';
-    body.textContent = text;
-
-    seg.appendChild(ts);
-    seg.appendChild(spk);
-    seg.appendChild(body);
+    const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = `[${nowTS()}]`;
+    const spk = document.createElement('span'); spk.className = 'spk'; spk.textContent = `${currentSpeaker}:`;
+    const body = document.createElement('span'); body.className = interim ? 'interim' : 'final'; body.textContent = text;
+    seg.appendChild(ts); seg.appendChild(spk); seg.appendChild(body);
     logEl.appendChild(seg);
-
     if (interim) interimSpan = body; else interimSpan = null;
-    // 末尾へスクロール
     seg.scrollIntoView({behavior:'smooth', block:'end'});
     backupSave();
   };
-
   const replaceInterim = (text) => {
-    if (interimSpan) {
-      interimSpan.textContent = text;
-    } else {
-      // なければ作る
-      addSegment(text, {interim:true});
-    }
+    if (interimSpan) interimSpan.textContent = text; else addSegment(text, {interim:true});
   };
-
   const setStatus = (txt) => statusEl.textContent = txt;
 
-  // ---- ローカルバックアップ（10秒ごと） ----
+  // ---- ローカルバックアップ ----
   function backupSave() {
-    // 軽量のHTMLで保存（表示そのまま）
     localStorage.setItem('transcript_html_v1', logEl.innerHTML);
     localStorage.setItem('transcript_speaker_v1', currentSpeaker);
   }
   function backupLoad() {
-    const html = localStorage.getItem('transcript_html_v1');
-    if (html) logEl.innerHTML = html;
-    const spk = localStorage.getItem('transcript_speaker_v1');
-    if (spk) currentSpeaker = spk;
+    const html = localStorage.getItem('transcript_html_v1'); if (html) logEl.innerHTML = html;
+    const spk = localStorage.getItem('transcript_speaker_v1'); if (spk) currentSpeaker = spk;
   }
-  // 定期保存タイマー
   setInterval(() => { if (recognizing || logEl.innerHTML) backupSave(); }, 10000);
 
-  // ---- 音声認識のセットアップ（自動再起動つき）----
+  // ---- メーター初期化 ----
+  async function initMicAndMeters() {
+    if (micStream) return micStream;
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true } });
+    // MediaRecorder（音声保存用）
+    mediaRecorder = new MediaRecorder(micStream, { mimeType: 'audio/webm' });
+    audioChunks = [];
+    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
+
+    // WebAudioで可視化
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    timeData = new Uint8Array(analyser.fftSize);
+    source.connect(analyser);
+
+    // キャンバス準備
+    wave.width = wave.clientWidth * window.devicePixelRatio;
+    wave.height = wave.clientHeight * window.devicePixelRatio;
+
+    // アニメループ
+    const loop = () => {
+      analyser.getByteTimeDomainData(timeData);
+
+      // RMSで音量推定（0..1）
+      let sum = 0;
+      for (let i=0;i<timeData.length;i++){
+        const v = (timeData[i]-128)/128;
+        sum += v*v;
+      }
+      const rms = Math.sqrt(sum/timeData.length);
+      const level = Math.min(1, rms*4); // 係数で見やすく
+
+      // 丸バブル＆バー
+      levelBar.style.width = (level*100).toFixed(0) + '%';
+      micBubble.classList.toggle('on', level>0.04);
+      const scale = 1 + Math.min(0.25, level*0.8);
+      micBubble.style.transform = `scale(${scale.toFixed(3)})`;
+
+      // 波形描画
+      const W = wave.width, H = wave.height, mid = H/2;
+      wctx.clearRect(0,0,W,H);
+      wctx.lineWidth = 2 * window.devicePixelRatio;
+      wctx.strokeStyle = '#2563eb';
+      wctx.beginPath();
+      const step = Math.ceil(timeData.length / W);
+      for (let x=0, i=0; x<W; x++, i+=step) {
+        const yv = (timeData[Math.min(i, timeData.length-1)]-128)/128;
+        const y = mid + yv * (H/2 - 4*window.devicePixelRatio);
+        if (x===0) wctx.moveTo(x,y); else wctx.lineTo(x,y);
+      }
+      wctx.stroke();
+
+      rafId = requestAnimationFrame(loop);
+    };
+    rafId = requestAnimationFrame(loop);
+
+    // 録音スタート（1秒ごとにチャンク）
+    mediaRecorder.start(1000);
+    return micStream;
+  }
+
+  function stopMicAndMeters() {
+    if (rafId) cancelAnimationFrame(rafId), rafId=null;
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    if (audioCtx) audioCtx.close().catch(()=>{});
+    micBubble.style.transform = 'scale(1)';
+    micBubble.classList.remove('on');
+  }
+
+  // ---- 音声認識（自動再起動つき）----
   function createRecognizer() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      alert('このブラウザは Web Speech API に未対応です。Chrome系をお試しください。');
-      return null;
-    }
+    if (!SR) { alert('このブラウザは Web Speech API に未対応です。Chrome/Edge をお試しください。'); return null; }
     const r = new SR();
     r.lang = 'ja-JP';
     r.interimResults = true;
-    r.continuous = true; // 連続
+    r.continuous = true;
     r.maxAlternatives = 1;
 
     r.onstart = () => setStatus('認識中...');
     r.onend = () => {
       setStatus(paused ? '一時停止中' : (recognizing ? '再起動中...' : '停止'));
-      // 停止指示でなければ自動再起動
-      if (recognizing && !paused) {
-        setTimeout(() => { try { r.start(); } catch(e){} }, 200);
-      }
+      if (recognizing && !paused) setTimeout(() => { try { r.start(); } catch(e){} }, 200);
     };
     r.onerror = (e) => {
       console.warn('Speech error:', e);
       setStatus('エラー: ' + (e.error || 'unknown'));
-      // ネットワーク／no-speech等は再起動
-      if (recognizing && !paused) {
-        setTimeout(() => { try { r.start(); } catch(_){} }, 400);
-      }
+      if (recognizing && !paused) setTimeout(() => { try { r.start(); } catch(_){} }, 400);
     };
     r.onresult = (ev) => {
       let interimText = '';
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const res = ev.results[i];
         const txt = res[0].transcript;
-        if (res.isFinal) {
-          // 確定は行を締める
-          addSegment(txt.trim(), {interim:false});
-        } else {
-          interimText += txt;
-        }
+        if (res.isFinal) addSegment(txt.trim(), {interim:false});
+        else interimText += txt;
       }
       if (interimText) replaceInterim(interimText);
     };
     return r;
-  }
-
-  // ---- 生音声の同時録音（バックアップ用）----
-  async function startAudioBackup() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-      mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
-      audioChunks = [];
-      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
-      mediaRecorder.start(1000); // 1sごとにチャンク
-    } catch (e) {
-      console.warn('マイク録音が利用できません:', e);
-    }
-  }
-  function stopAudioBackup() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   }
 
   // ---- ボタン挙動 ----
@@ -222,17 +275,21 @@
     if (recognizing) return;
     backupLoad();
     startTime = Date.now();
+
+    // 1) マイク起動＋メーター開始（録音も開始）
+    try { await initMicAndMeters(); }
+    catch (e) {
+      alert('マイクアクセスに失敗しました。権限（🔒→サイトの設定）をご確認ください。');
+      console.error(e); return;
+    }
+
+    // 2) 音声認識
     recognizer = createRecognizer();
     if (!recognizer) return;
     recognizing = true; paused = false;
 
-    btnStart.disabled = true;
-    btnPause.disabled = false;
-    btnResume.disabled = true;
-    btnStop.disabled = false;
-
+    btnStart.disabled = true; btnPause.disabled = false; btnResume.disabled = true; btnStop.disabled = false;
     try { recognizer.start(); } catch(e){}
-    await startAudioBackup();
     setStatus('認識中...');
   };
 
@@ -241,8 +298,7 @@
     paused = true;
     try { recognizer.stop(); } catch(e){}
     setStatus('一時停止中');
-    btnPause.disabled = true;
-    btnResume.disabled = false;
+    btnPause.disabled = true; btnResume.disabled = false;
   };
 
   btnResume.onclick = () => {
@@ -250,24 +306,19 @@
     paused = false;
     try { recognizer.start(); } catch(e){}
     setStatus('認識中...');
-    btnPause.disabled = false;
-    btnResume.disabled = true;
+    btnPause.disabled = false; btnResume.disabled = true;
   };
 
   btnStop.onclick = () => {
     recognizing = false; paused = false;
     try { recognizer.stop(); } catch(e){}
-    stopAudioBackup();
-    btnStart.disabled = false;
-    btnPause.disabled = true;
-    btnResume.disabled = true;
-    btnStop.disabled = true;
+    stopMicAndMeters();
+    btnStart.disabled = false; btnPause.disabled = true; btnResume.disabled = true; btnStop.disabled = true;
     setStatus('停止');
     backupSave();
   };
 
   btnSpeaker.onclick = () => {
-    // A->B->C->D->A...
     const next = {A:'B', B:'C', C:'D', D:'A'};
     currentSpeaker = next[currentSpeaker] || 'A';
     backupSave();
@@ -282,7 +333,6 @@
   };
 
   btnSaveTxt.onclick = () => {
-    // ログからプレーンテキスト生成
     const segs = Array.from(logEl.querySelectorAll('.seg'));
     const lines = segs.map(seg => {
       const ts = seg.querySelector('.ts')?.textContent ?? '';
@@ -299,10 +349,7 @@
   };
 
   btnSaveAudio.onclick = () => {
-    if (!audioChunks.length) {
-      alert('保存できる音声がありません（録音を開始して停止してください）');
-      return;
-    }
+    if (!audioChunks.length) { alert('保存できる音声がありません（録音を開始して停止してください）'); return; }
     const blob = new Blob(audioChunks, {type:'audio/webm'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
