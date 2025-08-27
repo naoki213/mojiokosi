@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>かんたん文字おこし（日本語固定・語彙辞書切替・マイク選択・メーター・保存/コピー/削除）</title>
+<title>かんたん文字おこし（日本語固定・マイク選択・メーター・保存/コピー/削除・重複防止）</title>
 <style>
   :root{ --bg:#f6f9fc; --card:#fff; --ink:#0f172a; --muted:#64748b; --accent:#2563eb; }
   html,body{margin:0;height:100%;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
@@ -34,7 +34,6 @@
   .seg .interim{color:#6b7280}
   .note{font-size:12px;color:var(--muted)}
   footer{padding:20px 0 60px;color:var(--muted);text-align:center}
-  .toggle{display:flex;align-items:center;gap:6px;margin-left:6px;font-size:14px}
 </style>
 </head>
 <body>
@@ -54,10 +53,6 @@
       <div class="row">
         <label class="badge" style="background:#fff">🎤 マイク:
           <select id="micSelect" style="margin-left:6px"></select>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="chkGrammar" />
-          語彙辞書ON（自宅など制限のない環境で推奨）
         </label>
         <span class="badge">日本語固定（ja-JP）</span>
         <span class="badge">推奨: PC Chrome / Edge</span>
@@ -82,99 +77,18 @@
 
   <footer>
     🎙️ 開始 → マイク許可 → メーターが動けば入力中。<br/>
-    会社ネットワークでは語彙辞書をOFFにするのが安定（ブロック回避）。自宅等ではONにして歯科用語の誤変換を抑制できます。
+    同じ文が2回出る現象を防ぐため、暫定行の昇格と直近finalのデデュープを実装済みです。
   </footer>
 
 <script>
 (() => {
-  // ===== 歯科向け 頻出語彙（バイアス用：完全・省略なし） =====
-  const DENTAL_KEYWORDS = [
-    // 分野1: 歯科分野（診療・一般）
-    "歯科","デンタル","歯科医院","歯科クリニック","診療所","歯科医師","歯科衛生士","歯科技工士","受付","助手",
-    "一般歯科","予防歯科","小児歯科","矯正歯科","口腔外科","審美歯科","インプラント",
-    "スケーリング","ルートプレーニング","PMTC","クリーニング",
-    "保険診療","自費診療","混合診療","レセプト","レセコン","分析","返戻","窓口負担",
-    "カルテ","電子カルテ","既往歴","アレルギー","服薬",
-    "口腔内","咬合","歯周病","う蝕","虫歯","根管治療","抜髄","抜歯","埋伏歯",
-    "補綴","クラウン","ブリッジ","インレー","アンレー","義歯","床用レジン",
-    "アライナー","ブラケット","ワイヤー","保定装置",
-    "咬合器","フェイスボウ","印象","咬合採得",
-    "X線","レントゲン","デンタル","パノラマ","セファロ","CBCT",
-    "滅菌","消毒","オートクレーブ","ディスポ","感染対策",
-    "アポイント","リコール","定期検診","初診","再初診","再診",
-
-    // 分野2: 開業支援・経営（計画・届け出・体制）
-    "開業支援","開業準備","事業計画","資金計画","融資","事業性評価",
-    "物件選定","テナント","内装","レイアウト","動線設計",
-    "医療機器選定","仕入れ","ディーラー","保守契約",
-    "保健所","開設届","管理者選任","施設基準","届出",
-    "労務管理","就業規則","採用","面接","研修","賃金","社会保険","勤怠",
-    "シフト","アサイン","業務分担","標準化","マニュアル",
-    "KPI設計","月次MTG","目標管理","運営改善","業務フロー",
-    "ブランディング","ロゴ","サイン","外装","内装デザイン",
-    "ホームページ","予約システム","SNS","Googleマップ","口コミ",
-    "開業費","創立費","開業資金","運転資金","リース","割賦",
-
-    // 分野3: 医療機器・材料
-    "ユニット","コンプレッサー","バキューム","口腔外バキューム",
-    "オートクレーブ","超音波スケーラー","タービン","コントラ","ハンドピース",
-    "口腔内カメラ","マイクロスコープ","口腔外カメラ",
-    "デジタルセンサー","イメージングプレート",
-    "CAD/CAM","ミリング","3Dプリンター","三次元プリンタ","ジルコニア","e.max","イーマックス",
-    "接着材","セメント","コンポジットレジン","シーラント",
-    "ラバーダム","アイソレーション","サージカルガイド",
-
-    // 分野4: 保険制度・点数・請求
-    "点数","算定","加算","算定要件","施設基準",
-    "初診料","再診料","管理料","画像診断","投薬","在宅",
-    "金パラ","銀合金","保険ブリッジ","保険クラウン",
-    "国保","社保","後期高齢","公費","負担割合",
-    "算定漏れ","返戻","査定","疑義照会",
-
-    // 分野5: 受付・運営・患者対応
-    "問診票","説明同意","署名","同意書","既往症",
-    "予約","リマインド","キャンセル","当日キャンセル","ドタキャン",
-    "会計","現金","キャッシュレス","クレジット","交通系","請求書","領収書","インボイス",
-    "個人情報保護","同意取得","セキュリティ","バックアップ",
-    "クレーム対応","苦情","再発防止","品質管理",
-
-    // 分野6: 財務・会計・税務
-    "財務諸表","決算書","試算表","月次決算",
-    "貸借対照表","バランスシート","BS",
-    "損益計算書","PL","P/L","収益","売上高","売上原価","粗利","営業利益","経常利益","当期純利益",
-    "キャッシュフロー計算書","CF","フリーキャッシュフロー",
-    "売掛金","買掛金","棚卸資産","前受金","未収入金","未払金",
-    "固定資産","減価償却","リース資産","無形資産",
-    "繰延資産","開業費","創立費","保険積立金",
-    "純資産","資本金","利益剰余金",
-    "負債","流動負債","固定負債","借入金","リース債務",
-    "原価","変動費","固定費","人件費","法定福利費","地代家賃","水道光熱費","減価償却費","広告宣伝費","交際費","旅費交通費","通信費","消耗品費",
-    "資金繰り","運転資金","資金繰り表","キャッシュフロー","回収サイト","支払サイト",
-    "予算","予実管理","乖離","月次報告","KPI",
-    "税務","消費税","仕入税額控除","インボイス制度","源泉所得税","年末調整","法人税","住民税","事業税",
-    "会計ソフト","クラウド会計","仕訳","総勘定元帳",
-
-    // 分野7: KPI・分析
-    "新患数","再初診","再来率","予約率","来院率","リコール率",
-    "自費比率","自費率","平均単価","客単価",
-    "ユニット稼働率","チェアタイム","滞在時間","施術時間",
-    "キャンセル率","ドタキャン率","未収金","回収率",
-    "人件費率","広告費率","家賃比率","損益分岐点",
-    "診療報酬","点数単価","レセプト件数","算定件数",
-
-    // 分野8: 表記ゆれ・読みバリエーション
-    "しか","レセ","植立","被せ物","かぶせ",
-    "マウスピース矯正","クリアアライナー",
-    "CR充填","レジン充填",
-    "口外バキューム",
-    "ピーエル","ビーエス","シーエフ"
-  ];
-
   // ===== 状態 =====
-  let recognizing=false, paused=false, recognizer=null, interimSpan=null, startTime=null;
+  let recognizing=false, paused=false, recognizer=null;
+  let interimSegEl=null, interimBodyEl=null;  // 暫定表示の要素
+  let lastFinalText='', lastFinalAt=0;        // 直近finalの重複防止
+  let startTime=null;
   let micStream=null, audioCtx=null, analyser=null, timeData=null, rafId=null;
-  let retryCount=0;
-  const MAX_RETRY=6;
+  let retryCount=0; const MAX_RETRY=6;
   let lastResultAt=Date.now();
 
   // 要素
@@ -183,7 +97,7 @@
   const wave=$('wave'), wctx=wave.getContext('2d');
   const btnStart=$('btnStart'), btnPause=$('btnPause'), btnResume=$('btnResume'), btnStop=$('btnStop');
   const btnQuickSave=$('btnQuickSave'), btnCopy=$('btnCopy'), btnClear=$('btnClear');
-  const micSelect=$('micSelect'), chkGrammar=$('chkGrammar');
+  const micSelect=$('micSelect');
 
   // ===== ユーティリティ =====
   const fmtTS=ms=>{const s=Math.floor(ms/1000);return`${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`};
@@ -195,11 +109,21 @@
     const ts=document.createElement('span'); ts.className='ts'; ts.textContent=`[${nowTS()}]`;
     const body=document.createElement('span'); body.className=interim?'interim':'final'; body.textContent=text;
     seg.appendChild(ts); seg.appendChild(body); logEl.appendChild(seg);
-    interimSpan = interim ? body : null;
+
+    if (interim) { interimSegEl=seg; interimBodyEl=body; }
+    else { interimSegEl=null; interimBodyEl=null; }
+
     seg.scrollIntoView({behavior:'smooth', block:'end'});
     backupSave();
   }
-  function replaceInterim(text){ if(interimSpan) interimSpan.textContent=text; else addSegment(text,{interim:true}); }
+
+  function replaceInterim(text) {
+    if (interimBodyEl) {
+      interimBodyEl.textContent = text;
+    } else {
+      addSegment(text, { interim: true });
+    }
+  }
 
   function backupSave(){ localStorage.setItem('transcript_html_v1', logEl.innerHTML); }
   function backupLoad(){ const html=localStorage.getItem('transcript_html_v1'); if (html) logEl.innerHTML = html; }
@@ -239,24 +163,14 @@
 
   // ===== デバイス選択 =====
   async function listMics(){
-    try {
-      await navigator.mediaDevices.getUserMedia({ audio:true });
-    } catch(_) { /* 権限未許可でも列挙できる環境もある */ }
+    try { await navigator.mediaDevices.getUserMedia({ audio:true }); } catch(_) {}
     const devices = await navigator.mediaDevices.enumerateDevices();
     const mics = devices.filter(d=>d.kind==='audioinput');
     micSelect.innerHTML = mics.map(d=>`<option value="${d.deviceId}">${d.label || 'マイク'}</option>`).join('');
-    // 前回選択の復元
     const savedId = localStorage.getItem('preferred_mic_id');
     if (savedId && mics.some(m=>m.deviceId===savedId)) micSelect.value = savedId;
   }
-
-  micSelect.addEventListener('change', ()=>{
-    localStorage.setItem('preferred_mic_id', micSelect.value || '');
-  });
-
-  chkGrammar.addEventListener('change', ()=>{
-    localStorage.setItem('use_grammar', chkGrammar.checked ? '1' : '0');
-  });
+  micSelect.addEventListener('change', ()=>{ localStorage.setItem('preferred_mic_id', micSelect.value || ''); });
 
   // ===== メーター初期化（選択マイク） =====
   async function initMicAndMeters(){
@@ -317,10 +231,9 @@
     setTimeout(()=>{ try{ rec.start(); }catch{} }, delay);
   }
 
-  // ===== 音声認識（日本語固定＋辞書トグル） =====
+  // ===== 音声認識（日本語固定・重複防止） =====
   function createRecognizer(){
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const SGL = window.SpeechGrammarList || window.webkitSpeechGrammarList;
     if (!SR) { alert('このブラウザは Web Speech API に未対応です。Chrome/Edge をお試しください。'); return null; }
 
     const r = new SR();
@@ -329,45 +242,62 @@
     r.continuous = true;
     r.maxAlternatives = 1;
 
-    const useGrammar = !!chkGrammar.checked;
-    if (useGrammar && SGL) {
-      const grammars = new SGL();
-      const jsgf = `#JSGF V1.0; grammar kws; public <kw> = ${DENTAL_KEYWORDS.join(' | ')} ;`;
-      grammars.addFromString(jsgf, 1.0);
-      r.grammars = grammars;
-      console.log('語彙辞書を有効化しました');
-    } else {
-      console.log('語彙辞書は無効です（会社ネット向け推奨）');
-    }
-
     r.onstart = () => { setStatus('認識中...（lang=ja-JP）'); retryCount = 0; lastResultAt = Date.now(); };
+
     r.onend   = () => {
       if (!recognizing || paused) { setStatus(paused ? '一時停止中' : '停止'); return; }
       if (retryCount < MAX_RETRY) restartWithBackoff(r);
       else setStatus('接続できません（ネットワーク/拡張機能/FWを確認）');
     };
+
     r.onerror = (e) => {
       console.warn('Speech error:', e);
       if (!recognizing || paused) return;
-      // よくあるエラー：'network','no-speech','aborted'
       if (retryCount < MAX_RETRY) restartWithBackoff(r);
       else setStatus('接続できません（ネットワーク/拡張機能/FWを確認）');
     };
+
     r.onresult = (ev) => {
-      lastResultAt = Date.now();
-      let interim='';
-      for (let i=ev.resultIndex; i<ev.results.length; i++){
-        const res=ev.results[i], txt=res[0].transcript;
+      let interim = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        const txt = res[0].transcript;
+
         if (res.isFinal) {
-          const cleaned = txt.trim().replace(/\s+/g,' ')
+          const cleaned = txt.trim()
+            .replace(/\s+/g, ' ')
             .replace(/(です|ます)(?!。|！|？)/g, '$1。');
-          addSegment(cleaned, {interim:false});
+
+          // (A) 直近finalと同一ならスキップ（3秒以内は再送とみなす）
+          const now = Date.now();
+          if (cleaned === lastFinalText && now - lastFinalAt < 3000) {
+            continue;
+          }
+
+          // (B) 暫定行があれば昇格（新しい行を増やさない）
+          if (interimBodyEl && interimSegEl) {
+            interimBodyEl.className = 'final';
+            interimBodyEl.textContent = cleaned;
+            interimSegEl = null;
+            interimBodyEl = null;
+            backupSave();
+          } else {
+            // いきなりfinalが来た場合のみ新規追加
+            addSegment(cleaned, { interim: false });
+          }
+
+          lastFinalText = cleaned;
+          lastFinalAt = now;
+
         } else {
           interim += txt;
         }
       }
+
       if (interim) replaceInterim(interim);
+      lastResultAt = Date.now();
     };
+
     return r;
   }
 
@@ -383,10 +313,6 @@
   btnStart.onclick = async () => {
     if (recognizing) return;
     backupLoad(); startTime = Date.now();
-
-    // 前回の辞書ON/OFF設定を復元
-    const savedGrammar = localStorage.getItem('use_grammar');
-    if (savedGrammar !== null) chkGrammar.checked = savedGrammar === '1';
 
     try { await initMicAndMeters(); }
     catch (e) { alert('マイク権限をご確認ください（🔒→サイトの設定）'); console.error(e); return; }
@@ -433,14 +359,9 @@
     setStatus('削除しました'); setTimeout(()=>setStatus('待機中'), 1500);
   };
 
-  // 初期化：マイク一覧・辞書設定復元
-  (async () => {
-    await listMics();
-    const savedGrammar = localStorage.getItem('use_grammar');
-    if (savedGrammar !== null) chkGrammar.checked = savedGrammar === '1';
-  })();
+  // 初期化：マイク一覧
+  (async () => { await listMics(); })();
 })();
 </script>
 </body>
 </html>
-
